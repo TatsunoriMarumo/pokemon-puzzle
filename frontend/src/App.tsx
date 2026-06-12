@@ -26,7 +26,13 @@ function App() {
 
         {game.isLoading && <Loading />}
 
-        {!game.isLoading && game.pokemon && (
+        {game.errorMessage && (
+          <p role="alert" className="text-center font-bold text-red-500">
+            {game.errorMessage}
+          </p>
+        )}
+
+        {!game.isLoading && !game.errorMessage && game.pokemon && (
           <>
             <PuzzleBoard
               imageUrl={game.pokemon.imageUrl}

@@ -1,96 +1,128 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { pokemonApi } from "../api/pokemonApi";
 import { DIFFICULTY_CONFIGS } from "../constants/difficulty";
+import {
+  INITIAL_PUZZLE_BOARD_STATE,
+  movePuzzlePiece,
+  puzzleBoardReducer,
+} from "../reducers/puzzleBoardReducer";
 import { audioService, type AudioPlayer } from "../services/audioService";
+import {
+  DefaultPuzzleSetupService,
+  type PokemonClient,
+  type PuzzleSetupService,
+} from "../services/puzzleSetupService";
 import type { Pokemon } from "../types/pokemon";
 import type { Difficulty, PuzzlePiece } from "../types/puzzle";
-import { createPuzzlePiecesFromImage } from "../utils/puzzleImageAnalyzer";
-import {
-  isPuzzleCompleted,
-  shufflePieces,
-  swapPieces,
-} from "../utils/puzzleUtils";
+import { resolveErrorMessage } from "../utils/errorMessageResolver";
 
 const DEFAULT_DIFFICULTY: Difficulty = "easy";
-
-type PokemonClient = {
-  getRandomPokemon(): Promise<Pokemon>;
-};
 
 type UsePuzzleGameOptions = {
   audioPlayer?: AudioPlayer;
   pokemonClient?: PokemonClient;
+  puzzleSetupService?: PuzzleSetupService;
 };
-
-async function createShuffledPieces(
-  imageUrl: string,
-  difficulty: Difficulty
-): Promise<PuzzlePiece[]> {
-  const gridSize = DIFFICULTY_CONFIGS[difficulty].gridSize;
-  const initialPieces = await createPuzzlePiecesFromImage(imageUrl, gridSize);
-
-  return shufflePieces(initialPieces);
-}
 
 export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
   const audioPlayer = options.audioPlayer ?? audioService;
   const pokemonClient = options.pokemonClient ?? pokemonApi;
 
+  const puzzleSetupService = useMemo(() => {
+    return (
+      options.puzzleSetupService ??
+      new DefaultPuzzleSetupService(pokemonClient)
+    );
+  }, [options.puzzleSetupService, pokemonClient]);
+
   const [pokemon, setPokemon] = useState<Pokemon | null>(null);
-  const [pieces, setPieces] = useState<PuzzlePiece[]>([]);
   const [difficulty, setDifficulty] = useState<Difficulty>(DEFAULT_DIFFICULTY);
-  const [isCompleted, setIsCompleted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [puzzleBoardState, dispatchPuzzleBoard] = useReducer(
+    puzzleBoardReducer,
+    INITIAL_PUZZLE_BOARD_STATE
+  );
 
   const requestIdRef = useRef(0);
   const pokemonRef = useRef<Pokemon | null>(null);
   const difficultyRef = useRef<Difficulty>(DEFAULT_DIFFICULTY);
-  const isCompletedRef = useRef(false);
+  const completionAudioPlayedRef = useRef(false);
 
+  const { pieces, isCompleted } = puzzleBoardState;
   const gridSize = DIFFICULTY_CONFIGS[difficulty].gridSize;
+
+  const setGameError = useCallback((error: unknown) => {
+    setErrorMessage(resolveErrorMessage(error));
+  }, []);
+
+  const clearGameError = useCallback(() => {
+    setErrorMessage(null);
+  }, []);
+
+  const preloadCry = useCallback(
+    (cryUrl: string) => {
+      void audioPlayer.preload(cryUrl).catch(setGameError);
+    },
+    [audioPlayer, setGameError]
+  );
+
+  const playCry = useCallback(
+    (cryUrl: string) => {
+      void audioPlayer.play(cryUrl).catch(setGameError);
+    },
+    [audioPlayer, setGameError]
+  );
 
   const applyGameState = useCallback(
     (
       nextPokemon: Pokemon,
-      nextPieces: PuzzlePiece[],
-      nextDifficulty: Difficulty
+      nextDifficulty: Difficulty,
+      piecesForPuzzle: PuzzlePiece[]
     ) => {
       pokemonRef.current = nextPokemon;
       difficultyRef.current = nextDifficulty;
-      isCompletedRef.current = false;
+      completionAudioPlayedRef.current = false;
 
       setPokemon(nextPokemon);
       setDifficulty(nextDifficulty);
-      setPieces(nextPieces);
-      setIsCompleted(false);
+      clearGameError();
 
-      void audioPlayer.preload(nextPokemon.cryUrl);
+      dispatchPuzzleBoard({
+        type: "replacePieces",
+        pieces: piecesForPuzzle,
+      });
+
+      preloadCry(nextPokemon.cryUrl);
     },
-    [audioPlayer]
+    [clearGameError, preloadCry]
   );
 
-  const initializeGame = useCallback(async () => {
+  const loadInitialPokemon = useCallback(() => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
 
-    try {
-      const nextPokemon = await pokemonClient.getRandomPokemon();
-      const nextPieces = await createShuffledPieces(
-        nextPokemon.imageUrl,
-        DEFAULT_DIFFICULTY
-      );
+    puzzleSetupService
+      .setupPuzzle(DEFAULT_DIFFICULTY)
+      .then((result) => {
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
 
-      if (requestIdRef.current !== requestId) {
-        return;
-      }
-
-      applyGameState(nextPokemon, nextPieces, DEFAULT_DIFFICULTY);
-    } finally {
-      if (requestIdRef.current === requestId) {
-        setIsLoading(false);
-      }
-    }
-  }, [applyGameState, pokemonClient]);
+        applyGameState(result.pokemon, result.difficulty, result.pieces);
+      })
+      .catch((error: unknown) => {
+        if (requestIdRef.current === requestId) {
+          setGameError(error);
+        }
+      })
+      .finally(() => {
+        if (requestIdRef.current === requestId) {
+          setIsLoading(false);
+        }
+      });
+  }, [applyGameState, puzzleSetupService, setGameError]);
 
   const loadNewPokemon = useCallback(
     async (selectedDifficulty: Difficulty = difficultyRef.current) => {
@@ -98,26 +130,27 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
       requestIdRef.current = requestId;
 
       setIsLoading(true);
+      clearGameError();
 
       try {
-        const nextPokemon = await pokemonClient.getRandomPokemon();
-        const nextPieces = await createShuffledPieces(
-          nextPokemon.imageUrl,
-          selectedDifficulty
-        );
+        const result = await puzzleSetupService.setupPuzzle(selectedDifficulty);
 
         if (requestIdRef.current !== requestId) {
           return;
         }
 
-        applyGameState(nextPokemon, nextPieces, selectedDifficulty);
+        applyGameState(result.pokemon, result.difficulty, result.pieces);
+      } catch (error) {
+        if (requestIdRef.current === requestId) {
+          setGameError(error);
+        }
       } finally {
         if (requestIdRef.current === requestId) {
           setIsLoading(false);
         }
       }
     },
-    [applyGameState, pokemonClient]
+    [applyGameState, clearGameError, puzzleSetupService, setGameError]
   );
 
   const changeDifficulty = useCallback(
@@ -141,10 +174,11 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
     requestIdRef.current = requestId;
 
     setIsLoading(true);
+    clearGameError();
 
     try {
-      const nextPieces = await createShuffledPieces(
-        currentPokemon.imageUrl,
+      const nextPieces = await puzzleSetupService.resetPuzzle(
+        currentPokemon,
         currentDifficulty
       );
 
@@ -152,49 +186,74 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
         return;
       }
 
-      isCompletedRef.current = false;
+      completionAudioPlayedRef.current = false;
 
-      setPieces(nextPieces);
-      setIsCompleted(false);
+      dispatchPuzzleBoard({
+        type: "replacePieces",
+        pieces: nextPieces,
+      });
 
-      void audioPlayer.preload(currentPokemon.cryUrl);
+      preloadCry(currentPokemon.cryUrl);
+    } catch (error) {
+      if (requestIdRef.current === requestId) {
+        setGameError(error);
+      }
     } finally {
       if (requestIdRef.current === requestId) {
         setIsLoading(false);
       }
     }
-  }, [audioPlayer]);
+  }, [clearGameError, preloadCry, puzzleSetupService, setGameError]);
 
   const movePiece = useCallback(
     (activeId: string, overId: string) => {
-      if (isCompletedRef.current) {
+      if (puzzleBoardState.isCompleted) {
         return;
       }
 
-      setPieces((currentPieces) => {
-        const nextPieces = swapPieces(currentPieces, activeId, overId);
-        const completed = isPuzzleCompleted(nextPieces);
+      const nextPuzzleBoardState = movePuzzlePiece(
+        puzzleBoardState,
+        activeId,
+        overId
+      );
 
-        isCompletedRef.current = completed;
-        setIsCompleted(completed);
+      const completedByThisMove =
+        !puzzleBoardState.isCompleted && nextPuzzleBoardState.isCompleted;
 
-        if (completed && pokemonRef.current) {
-          void audioPlayer.play(pokemonRef.current.cryUrl);
-        }
-
-        return nextPieces;
+      dispatchPuzzleBoard({
+        type: "movePiece",
+        activeId,
+        overId,
       });
+
+      if (!completedByThisMove) {
+        return;
+      }
+
+      if (completionAudioPlayedRef.current) {
+        return;
+      }
+
+      completionAudioPlayedRef.current = true;
+
+      const currentPokemon = pokemonRef.current;
+
+      if (!currentPokemon) {
+        return;
+      }
+
+      playCry(currentPokemon.cryUrl);
     },
-    [audioPlayer]
+    [playCry, puzzleBoardState]
   );
 
   useEffect(() => {
-    void initializeGame();
+    loadInitialPokemon();
 
     return () => {
       requestIdRef.current += 1;
     };
-  }, [initializeGame]);
+  }, [loadInitialPokemon]);
 
   return {
     pokemon,
@@ -203,6 +262,7 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
     gridSize,
     isCompleted,
     isLoading,
+    errorMessage,
     loadNewPokemon,
     changeDifficulty,
     resetPuzzle,
