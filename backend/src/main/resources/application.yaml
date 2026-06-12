@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: backend
+  messages:
+    basename: messages
+pokeapi:
+  base-url: https://pokeapi.co/api/v2
+  pokemon:
+    limit: 100000
+    offset: 0
+    max-retry-count: 20
