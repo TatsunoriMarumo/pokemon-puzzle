@@ -15,11 +15,13 @@ class PokemonService(
     private val pokeApiProperties: PokeApiProperties,
     private val messageService: MessageService
 ) {
-    fun getRandomPokemon(): RandomPokemonResponse {
-        val pokemonList = pokeApiClient.fetchPokemonList().results
+    private val cachedPokemonList by lazy {
+        pokeApiClient.fetchPokemonList().results
+    }
 
+    fun getRandomPokemon(): RandomPokemonResponse {
         repeat(pokeApiProperties.pokemon.maxRetryCount) {
-            val selectedPokemon = pokemonList.random()
+            val selectedPokemon = cachedPokemonList.random()
             val pokemonDetail = pokeApiClient.fetchPokemonDetail(selectedPokemon.url)
 
             val imageUrl = extractOfficialArtworkUrl(pokemonDetail)
@@ -51,7 +53,7 @@ class PokemonService(
     }
 
     private fun resolveJapaneseName(
-       pokemonDetail: PokemonDetailResponse
+        pokemonDetail: PokemonDetailResponse
     ): String {
         val formUrl = pokemonDetail.forms.firstOrNull()?.url
 
