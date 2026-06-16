@@ -1,5 +1,8 @@
-import type { PuzzlePiece } from "../types/puzzle";
-import { isPuzzleCompleted, swapPieces } from "../utils/puzzleUtils";
+import type { PuzzlePiece, PuzzlePiecePosition } from "../types/puzzle";
+import {
+  isPuzzleCompleted,
+  moveConnectedPuzzleGroupToPosition,
+} from "../utils/puzzleUtils";
 
 export type PuzzleBoardState = {
   pieces: PuzzlePiece[];
@@ -12,9 +15,9 @@ export type PuzzleBoardAction =
       pieces: PuzzlePiece[];
     }
   | {
-      type: "movePiece";
-      activeId: string;
-      overId: string;
+      type: "movePieceGroup";
+      activePieceId: string;
+      destination: PuzzlePiecePosition;
     };
 
 export const INITIAL_PUZZLE_BOARD_STATE: PuzzleBoardState = {
@@ -22,16 +25,20 @@ export const INITIAL_PUZZLE_BOARD_STATE: PuzzleBoardState = {
   isCompleted: false,
 };
 
-export function movePuzzlePiece(
+export function movePuzzlePieceGroup(
   state: PuzzleBoardState,
-  activeId: string,
-  overId: string
+  activePieceId: string,
+  destination: PuzzlePiecePosition
 ): PuzzleBoardState {
   if (state.isCompleted) {
     return state;
   }
 
-  const nextPieces = swapPieces(state.pieces, activeId, overId);
+  const nextPieces = moveConnectedPuzzleGroupToPosition(
+    state.pieces,
+    activePieceId,
+    destination
+  );
 
   return {
     pieces: nextPieces,
@@ -50,8 +57,12 @@ export function puzzleBoardReducer(
         isCompleted: false,
       };
 
-    case "movePiece":
-      return movePuzzlePiece(state, action.activeId, action.overId);
+    case "movePieceGroup":
+      return movePuzzlePieceGroup(
+        state,
+        action.activePieceId,
+        action.destination
+      );
 
     default:
       return state;

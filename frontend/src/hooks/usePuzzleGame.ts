@@ -3,7 +3,7 @@ import { pokemonApi } from "../api/pokemonApi";
 import { DIFFICULTY_CONFIGS } from "../constants/difficulty";
 import {
   INITIAL_PUZZLE_BOARD_STATE,
-  movePuzzlePiece,
+  movePuzzlePieceGroup,
   puzzleBoardReducer,
 } from "../reducers/puzzleBoardReducer";
 import { audioService, type AudioPlayer } from "../services/audioService";
@@ -13,7 +13,7 @@ import {
   type PuzzleSetupService,
 } from "../services/puzzleSetupService";
 import type { Pokemon } from "../types/pokemon";
-import type { Difficulty, PuzzlePiece } from "../types/puzzle";
+import type { Difficulty, PuzzlePiece, PuzzlePiecePosition } from "../types/puzzle";
 import { resolveErrorMessage } from "../utils/errorMessageResolver";
 
 const DEFAULT_DIFFICULTY: Difficulty = "easy";
@@ -60,6 +60,10 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
   const clearGameError = useCallback(() => {
     setErrorMessage(null);
   }, []);
+
+  const prepareAudio = useCallback(() => {
+    void audioPlayer.prepare().catch(setGameError);
+  }, [audioPlayer, setGameError]);
 
   const preloadCry = useCallback(
     (cryUrl: string) => {
@@ -154,12 +158,52 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
   );
 
   const changeDifficulty = useCallback(
-    (nextDifficulty: Difficulty) => {
-      difficultyRef.current = nextDifficulty;
-      setDifficulty(nextDifficulty);
-      void loadNewPokemon(nextDifficulty);
+    async (nextDifficulty: Difficulty) => {
+      const currentPokemon = pokemonRef.current;
+      const currentDifficulty = difficultyRef.current;
+
+      if (!currentPokemon || nextDifficulty === currentDifficulty) {
+        return;
+      }
+
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+
+      setIsLoading(true);
+      clearGameError();
+
+      try {
+        const nextPieces = await puzzleSetupService.resetPuzzle(
+          currentPokemon,
+          nextDifficulty
+        );
+
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
+
+        difficultyRef.current = nextDifficulty;
+        completionAudioPlayedRef.current = false;
+
+        setDifficulty(nextDifficulty);
+
+        dispatchPuzzleBoard({
+          type: "replacePieces",
+          pieces: nextPieces,
+        });
+
+        preloadCry(currentPokemon.cryUrl);
+      } catch (error) {
+        if (requestIdRef.current === requestId) {
+          setGameError(error);
+        }
+      } finally {
+        if (requestIdRef.current === requestId) {
+          setIsLoading(false);
+        }
+      }
     },
-    [loadNewPokemon]
+    [clearGameError, preloadCry, puzzleSetupService, setGameError]
   );
 
   const resetPuzzle = useCallback(async () => {
@@ -206,24 +250,26 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
   }, [clearGameError, preloadCry, puzzleSetupService, setGameError]);
 
   const movePiece = useCallback(
-    (activeId: string, overId: string) => {
+    (activePieceId: string, destination: PuzzlePiecePosition) => {
       if (puzzleBoardState.isCompleted) {
         return;
       }
 
-      const nextPuzzleBoardState = movePuzzlePiece(
+      prepareAudio();
+
+      const nextPuzzleBoardState = movePuzzlePieceGroup(
         puzzleBoardState,
-        activeId,
-        overId
+        activePieceId,
+        destination
       );
 
       const completedByThisMove =
         !puzzleBoardState.isCompleted && nextPuzzleBoardState.isCompleted;
 
       dispatchPuzzleBoard({
-        type: "movePiece",
-        activeId,
-        overId,
+        type: "movePieceGroup",
+        activePieceId,
+        destination,
       });
 
       if (!completedByThisMove) {
@@ -244,7 +290,7 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
 
       playCry(currentPokemon.cryUrl);
     },
-    [playCry, puzzleBoardState]
+    [playCry, prepareAudio, puzzleBoardState]
   );
 
   useEffect(() => {
@@ -254,6 +300,37 @@ export function usePuzzleGame(options: UsePuzzleGameOptions = {}) {
       requestIdRef.current += 1;
     };
   }, [loadInitialPokemon]);
+
+  useEffect(() => {
+    const handlePointerDown = () => {
+      prepareAudio();
+    };
+
+    const handleKeyDown = () => {
+      prepareAudio();
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown, {
+      once: true,
+      passive: true,
+      capture: true,
+    });
+
+    window.addEventListener("keydown", handleKeyDown, {
+      once: true,
+      capture: true,
+    });
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, {
+        capture: true,
+      });
+
+      window.removeEventListener("keydown", handleKeyDown, {
+        capture: true,
+      });
+    };
+  }, [prepareAudio]);
 
   return {
     pokemon,

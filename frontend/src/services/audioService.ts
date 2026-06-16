@@ -1,6 +1,7 @@
 import { AppError, ERROR_CODES } from "../constants/errorCodes";
 
 export interface AudioPlayer {
+  prepare(): Promise<void>;
   preload(url: string): Promise<void>;
   play(url: string): Promise<void>;
   clear(url: string): void;
@@ -24,8 +25,12 @@ type WebkitAudioWindow = Window &
     webkitAudioContext?: typeof AudioContext;
   };
 
+const AUDIO_START_DELAY_SECONDS = 0.05;
+const AUDIO_BUFFER_OFFSET_SECONDS = 0;
+
 class BrowserAudioContextProvider {
   private audioContext: AudioContext | null = null;
+  private preparePromise: Promise<void> | null = null;
 
   get(): AudioContext {
     if (this.audioContext) {
@@ -45,14 +50,25 @@ class BrowserAudioContextProvider {
     return this.audioContext;
   }
 
-  async resume(): Promise<AudioContext> {
+  async prepare(): Promise<void> {
+    if (this.preparePromise) {
+      return this.preparePromise;
+    }
+
+    this.preparePromise = this.resume().catch((error: unknown) => {
+      this.preparePromise = null;
+      throw error;
+    });
+
+    return this.preparePromise;
+  }
+
+  async resume(): Promise<void> {
     const audioContext = this.get();
 
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
-
-    return audioContext;
   }
 }
 
@@ -71,7 +87,11 @@ class CachedAudioBufferLoader implements AudioBufferLoader {
       return cachedBuffer;
     }
 
-    const bufferPromise = this.fetchAndDecode(url);
+    const bufferPromise = this.fetchAndDecode(url).catch((error: unknown) => {
+      this.cache.delete(url);
+      throw error;
+    });
+
     this.cache.set(url, bufferPromise);
 
     return bufferPromise;
@@ -114,13 +134,17 @@ class WebAudioSourcePlayer implements AudioSourcePlayer {
   }
 
   async play(url: string, buffer: AudioBuffer): Promise<void> {
-    const audioContext = await this.audioContextProvider.resume();
+    await this.audioContextProvider.resume();
+
+    const audioContext = this.audioContextProvider.get();
 
     this.stop(url);
 
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(audioContext.destination);
+
+    const startTime = audioContext.currentTime + AUDIO_START_DELAY_SECONDS;
 
     source.onended = () => {
       if (this.activeSources.get(url) === source) {
@@ -129,7 +153,7 @@ class WebAudioSourcePlayer implements AudioSourcePlayer {
     };
 
     this.activeSources.set(url, source);
-    source.start(audioContext.currentTime);
+    source.start(startTime, AUDIO_BUFFER_OFFSET_SECONDS);
   }
 
   stop(url: string): void {
@@ -162,15 +186,22 @@ class WebAudioSourcePlayer implements AudioSourcePlayer {
 }
 
 class BrowserAudioService implements AudioPlayer {
+  private readonly audioContextProvider: BrowserAudioContextProvider;
   private readonly audioBufferLoader: AudioBufferLoader;
   private readonly audioSourcePlayer: AudioSourcePlayer;
 
   constructor(
+    audioContextProvider: BrowserAudioContextProvider,
     audioBufferLoader: AudioBufferLoader,
     audioSourcePlayer: AudioSourcePlayer
   ) {
+    this.audioContextProvider = audioContextProvider;
     this.audioBufferLoader = audioBufferLoader;
     this.audioSourcePlayer = audioSourcePlayer;
+  }
+
+  async prepare(): Promise<void> {
+    await this.audioContextProvider.prepare();
   }
 
   async preload(url: string): Promise<void> {
@@ -198,6 +229,7 @@ const audioBufferLoader = new CachedAudioBufferLoader(audioContextProvider);
 const audioSourcePlayer = new WebAudioSourcePlayer(audioContextProvider);
 
 export const audioService: AudioPlayer = new BrowserAudioService(
+  audioContextProvider,
   audioBufferLoader,
   audioSourcePlayer
 );
