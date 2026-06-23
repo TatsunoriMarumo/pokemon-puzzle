@@ -15,4 +15,6 @@ COPY --from=build /app/build/libs/*.jar app.jar
 
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0"
 
+EXPOSE 10000
+
 ENTRYPOINT ["java", "-jar", "app.jar"]

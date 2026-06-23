@@ -1,12 +1,16 @@
 package dev.tatsunori.backend.config
 
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.web.servlet.config.annotation.CorsRegistry
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 
 @Configuration
-class CorsConfig {
+class CorsConfig(
+    @Value("\${app.cors.allowed-origins}")
+    private val allowedOrigins: String
+) {
 
     @Bean
     fun corsConfigurer(): WebMvcConfigurer {
@@ -14,8 +18,10 @@ class CorsConfig {
             override fun addCorsMappings(registry: CorsRegistry) {
                 registry.addMapping("/api/**")
                     .allowedOrigins(
-                        "http://localhost:5173",
-                        "http://192.168.1.8:5173"
+                        *allowedOrigins
+                            .split(",")
+                            .map { it.trim() }
+                            .toTypedArray()
                     )
                     .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                     .allowedHeaders("*")
