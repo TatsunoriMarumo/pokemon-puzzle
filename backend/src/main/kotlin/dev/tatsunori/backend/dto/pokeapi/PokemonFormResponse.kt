@@ -3,8 +3,11 @@ package dev.tatsunori.backend.dto.pokeapi
 import com.fasterxml.jackson.annotation.JsonProperty
 
 data class PokemonFormResponse(
-    @JsonProperty("names")
-    val formNames: List<LocalizedName>
+    @JsonProperty("form_names")
+    val formNames: List<LocalizedName>,
+
+    @JsonProperty("is_mega")
+    val isMega: Boolean
 )
 
 data class LocalizedName(
